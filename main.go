@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
+	"sort"
 	"time"
 )
 
@@ -20,8 +22,11 @@ const (
 	firstHome = trackLen
 	lastHome  = trackLen + tokensPerPlayer - 1
 
-	verbose = true // print every roll; set to false for quiet runs
+	numGames = 1000
 )
+
+// verbose prints every roll when true. Turned off for batch runs.
+var verbose = false
 
 var playerNames = [numPlayers]string{"Red", "Blue", "Green", "Yellow"}
 
@@ -189,9 +194,50 @@ func (g *Game) Play() (winner int, totalRolls int) {
 	}
 }
 
+func mean(data []int) float64 {
+	sum := 0
+	for _, v := range data {
+		sum += v
+	}
+	return float64(sum) / float64(len(data))
+}
+
+// median expects data to already be sorted.
+func median(sorted []int) float64 {
+	n := len(sorted)
+	if n%2 == 1 {
+		return float64(sorted[n/2])
+	}
+	return float64(sorted[n/2-1]+sorted[n/2]) / 2
+}
+
+// stdDev returns the sample standard deviation (n-1 denominator).
+func stdDev(data []int, avg float64) float64 {
+	if len(data) < 2 {
+		return 0
+	}
+	sumSq := 0.0
+	for _, v := range data {
+		d := float64(v) - avg
+		sumSq += d * d
+	}
+	return math.Sqrt(sumSq / float64(len(data)-1))
+}
+
 func main() {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	game := NewGame(rng)
-	winner, rolls := game.Play()
-	fmt.Printf("\n%s wins! The game took %d total rolls.\n", playerNames[winner], rolls)
+
+	results := make([]int, numGames)
+	for i := range results {
+		_, rolls := NewGame(rng).Play()
+		results[i] = rolls
+	}
+
+	sort.Ints(results)
+	avg := mean(results)
+
+	fmt.Printf("Games simulated:    %d\n", numGames)
+	fmt.Printf("Average rolls:      %.2f\n", avg)
+	fmt.Printf("Median rolls:       %.1f\n", median(results))
+	fmt.Printf("Std deviation:      %.2f\n", stdDev(results, avg))
 }
