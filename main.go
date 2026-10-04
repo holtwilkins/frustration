@@ -30,14 +30,19 @@ var verbose = false
 
 var playerNames = [numPlayers]string{"Red", "Blue", "Green", "Yellow"}
 
+// A Strategy picks which token to move for a given roll, returning the token
+// index, or -1 if there is no legal move. All four players use the same one.
+type Strategy func(g *Game, player, roll int) int
+
 type Game struct {
-	tokens [numPlayers][tokensPerPlayer]int
-	rolls  int
-	rng    *rand.Rand
+	tokens   [numPlayers][tokensPerPlayer]int
+	rolls    int
+	rng      *rand.Rand
+	strategy Strategy
 }
 
-func NewGame(rng *rand.Rand) *Game {
-	g := &Game{rng: rng}
+func NewGame(rng *rand.Rand, strategy Strategy) *Game {
+	g := &Game{rng: rng, strategy: strategy}
 	for p := range g.tokens {
 		for t := range g.tokens[p] {
 			g.tokens[p][t] = jail
@@ -83,10 +88,9 @@ func (g *Game) hasWon(player int) bool {
 	return true
 }
 
-// chooseMove applies the strategy: with a 6, free a jailed token if possible;
+// furthestFirst (Strategy A): with a 6, free a jailed token if possible;
 // otherwise move the furthest-along token that has a legal move.
-// Returns the token index, or -1 if no legal move exists.
-func (g *Game) chooseMove(player, roll int) int {
+func furthestFirst(g *Game, player, roll int) int {
 	if roll == 6 && !g.occupiedByOwn(player, 0) {
 		for t, pos := range g.tokens[player] {
 			if pos == jail {
@@ -94,7 +98,46 @@ func (g *Game) chooseMove(player, roll int) int {
 			}
 		}
 	}
+	return furthestMovable(g, player, roll)
+}
 
+// onePieceAtATime (Strategy B): never have more than one token on the track.
+// While a token is out on the track, every roll advances it, and 6s are NOT
+// used to free another token. Only once nothing is on the track (the previous
+// token is safe in the finish area) does a 6 free the next token.
+//
+// If the lone track token can't legally use a roll (overshoots the finish or
+// is blocked), the roll goes to the furthest finish-area token that can move
+// deeper; it never frees a token from jail.
+func onePieceAtATime(g *Game, player, roll int) int {
+	onTrack := -1
+	for t, pos := range g.tokens[player] {
+		if pos >= 0 && pos < firstHome {
+			onTrack = t
+		}
+	}
+
+	if onTrack == -1 {
+		if roll == 6 {
+			for t, pos := range g.tokens[player] {
+				if pos == jail {
+					return t
+				}
+			}
+		}
+		return furthestMovable(g, player, roll)
+	}
+
+	target := g.tokens[player][onTrack] + roll
+	if target <= lastHome && !g.occupiedByOwn(player, target) {
+		return onTrack
+	}
+	return furthestMovable(g, player, roll)
+}
+
+// furthestMovable returns the furthest-along non-jailed token that can legally
+// move by roll, or -1 if none can.
+func furthestMovable(g *Game, player, roll int) int {
 	best, bestPos := -1, jail
 	for t, pos := range g.tokens[player] {
 		if pos == jail {
@@ -165,7 +208,7 @@ func (g *Game) takeTurn(player int) bool {
 		tries++
 
 		roll := g.roll()
-		t := g.chooseMove(player, roll)
+		t := g.strategy(g, player, roll)
 		if verbose {
 			if t >= 0 {
 				fmt.Printf("Roll %3d: %-6s rolled %d, %s\n", g.rolls, playerNames[player], roll, g.applyMove(player, t, roll))
@@ -224,20 +267,27 @@ func stdDev(data []int, avg float64) float64 {
 	return math.Sqrt(sumSq / float64(len(data)-1))
 }
 
-func main() {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
+// simulate runs numGames games with the given strategy and prints statistics.
+func simulate(name string, strategy Strategy, rng *rand.Rand) {
 	results := make([]int, numGames)
 	for i := range results {
-		_, rolls := NewGame(rng).Play()
+		_, rolls := NewGame(rng, strategy).Play()
 		results[i] = rolls
 	}
 
 	sort.Ints(results)
 	avg := mean(results)
 
+	fmt.Printf("=== %s ===\n", name)
 	fmt.Printf("Games simulated:    %d\n", numGames)
 	fmt.Printf("Average rolls:      %.2f\n", avg)
 	fmt.Printf("Median rolls:       %.1f\n", median(results))
-	fmt.Printf("Std deviation:      %.2f\n", stdDev(results, avg))
+	fmt.Printf("Std deviation:      %.2f\n\n", stdDev(results, avg))
+}
+
+func main() {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	simulate("Strategy A: free tokens on every 6, advance furthest", furthestFirst, rng)
+	simulate("Strategy B: one token at a time", onePieceAtATime, rng)
 }
