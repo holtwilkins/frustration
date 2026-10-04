@@ -22,7 +22,7 @@ const (
 	firstHome = trackLen
 	lastHome  = trackLen + tokensPerPlayer - 1
 
-	numGames = 1000
+	numGames = 5000
 )
 
 // verbose prints every roll when true. Turned off for batch runs.
@@ -34,15 +34,28 @@ var playerNames = [numPlayers]string{"Red", "Blue", "Green", "Yellow"}
 // index, or -1 if there is no legal move. All four players use the same one.
 type Strategy func(g *Game, player, roll int) int
 
+// Rules determines what happens to a token that gets landed on.
+type Rules int
+
+const (
+	// StandardRules: a captured token goes back to jail and needs a 6 to leave.
+	StandardRules Rules = iota
+	// ParoleRules: once free from jail, a token never returns. A captured token
+	// goes back to its own start space, or if that is occupied (by any token),
+	// to the next unoccupied space toward its finish.
+	ParoleRules
+)
+
 type Game struct {
 	tokens   [numPlayers][tokensPerPlayer]int
 	rolls    int
 	rng      *rand.Rand
 	strategy Strategy
+	rules    Rules
 }
 
-func NewGame(rng *rand.Rand, strategy Strategy) *Game {
-	g := &Game{rng: rng, strategy: strategy}
+func NewGame(rng *rand.Rand, strategy Strategy, rules Rules) *Game {
+	g := &Game{rng: rng, strategy: strategy, rules: rules}
 	for p := range g.tokens {
 		for t := range g.tokens[p] {
 			g.tokens[p][t] = jail
@@ -68,6 +81,33 @@ func (g *Game) occupiedByOwn(player, rel int) bool {
 		}
 	}
 	return false
+}
+
+// trackOccupied reports whether any token (of any player) other than the given
+// one is sitting on the shared board position a.
+func (g *Game) trackOccupied(a, exceptPlayer, exceptToken int) bool {
+	for p := 0; p < numPlayers; p++ {
+		for t, pos := range g.tokens[p] {
+			if p == exceptPlayer && t == exceptToken {
+				continue
+			}
+			if pos >= 0 && pos < firstHome && absPos(p, pos) == a {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// paroleSpot finds where a captured token lands under parole rules: its own
+// start space, or the next unoccupied track space heading toward its finish.
+func (g *Game) paroleSpot(player, token int) int {
+	for rel := 0; rel < firstHome; rel++ {
+		if !g.trackOccupied(absPos(player, rel), player, token) {
+			return rel
+		}
+	}
+	return jail // unreachable in practice: 28 spaces vs. at most 15 other tokens
 }
 
 func (g *Game) allInJail(player int) bool {
@@ -184,8 +224,18 @@ func (g *Game) applyMove(player, t, roll int) string {
 			}
 			for ot, opos := range g.tokens[op] {
 				if opos >= 0 && opos < firstHome && absPos(op, opos) == a {
-					g.tokens[op][ot] = jail
-					desc += fmt.Sprintf(" and sends %s's token %d to jail!", playerNames[op], ot+1)
+					if g.rules == ParoleRules {
+						newPos := g.paroleSpot(op, ot)
+						g.tokens[op][ot] = newPos
+						if newPos == 0 {
+							desc += fmt.Sprintf(" and sends %s's token %d back to its start!", playerNames[op], ot+1)
+						} else {
+							desc += fmt.Sprintf(" and sends %s's token %d back to %d spaces past its start!", playerNames[op], ot+1, newPos)
+						}
+					} else {
+						g.tokens[op][ot] = jail
+						desc += fmt.Sprintf(" and sends %s's token %d to jail!", playerNames[op], ot+1)
+					}
 				}
 			}
 		}
@@ -268,10 +318,10 @@ func stdDev(data []int, avg float64) float64 {
 }
 
 // simulate runs numGames games with the given strategy and prints statistics.
-func simulate(name string, strategy Strategy, rng *rand.Rand) {
+func simulate(name string, strategy Strategy, rules Rules, rng *rand.Rand) {
 	results := make([]int, numGames)
 	for i := range results {
-		_, rolls := NewGame(rng, strategy).Play()
+		_, rolls := NewGame(rng, strategy, rules).Play()
 		results[i] = rolls
 	}
 
@@ -288,6 +338,24 @@ func simulate(name string, strategy Strategy, rng *rand.Rand) {
 func main() {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	simulate("Strategy A: free tokens on every 6, advance furthest", furthestFirst, rng)
-	simulate("Strategy B: one token at a time", onePieceAtATime, rng)
+	rulesets := []struct {
+		name  string
+		rules Rules
+	}{
+		{"Standard rules", StandardRules},
+		{"Parole rules", ParoleRules},
+	}
+	strategies := []struct {
+		name     string
+		strategy Strategy
+	}{
+		{"Strategy A (free on every 6, advance furthest)", furthestFirst},
+		{"Strategy B (one token at a time)", onePieceAtATime},
+	}
+
+	for _, r := range rulesets {
+		for _, s := range strategies {
+			simulate(r.name+" / "+s.name, s.strategy, r.rules, rng)
+		}
+	}
 }
